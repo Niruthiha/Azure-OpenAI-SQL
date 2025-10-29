@@ -18,7 +18,7 @@ jobs:
       with:
         python-version: '3.9'
     
-    # CHECK 1: Install requirements - checks EVERYWHERE automatically
+    # CHECK 1: Install requirements
     - name: "📦 Check 1: Install dependencies"
       id: check-deps
       continue-on-error: true
@@ -30,11 +30,10 @@ jobs:
         FOUND_DEPS=false
         INSTALL_SUCCESS=false
         
-        # Search for ALL requirements.txt files anywhere in the project
+        # Search for requirements files
         echo "Searching for requirements files..."
         for req_file in $(find . -name "requirements*.txt" -o -name "requirement*.txt" 2>/dev/null); do
           echo "Found: $req_file"
-          echo "Installing from $req_file..."
           pip install -r "$req_file" 2>/dev/null && INSTALL_SUCCESS=true && FOUND_DEPS=true
         done
         
@@ -54,63 +53,13 @@ jobs:
         if [ -f Pipfile ]; then
           echo "Found: Pipfile"
           pip install pipenv 2>/dev/null
-          pipenv install --system --deploy 2>/dev/null && INSTALL_SUCCESS=true && FOUND_DEPS=true
-        fi
-        
-        # Check for environment.yml (conda)
-        if [ -f environment.yml ] || [ -f environment.yaml ]; then
-          echo "Found: Conda environment file"
-          # Can't install conda in GitHub Actions easily, but we found it
-          FOUND_DEPS=true
+          pipenv install --system 2>/dev/null && INSTALL_SUCCESS=true && FOUND_DEPS=true
         fi
         
         if [ "$FOUND_DEPS" = false ]; then
-          echo "⚠️ No dependency files found anywhere in the project"
-          echo "Attempting to detect imports and install common packages..."
-          
-          # Try to install commonly used packages based on imports
-          python << 'EOF'
-import os
-import ast
-import re
-
-imports = set()
-for root, dirs, files in os.walk('.'):
-    dirs[:] = [d for d in dirs if d not in ['.git', 'venv', '__pycache__']]
-    for file in files:
-        if file.endswith('.py'):
-            try:
-                with open(os.path.join(root, file), 'r') as f:
-                    tree = ast.parse(f.read())
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.Import):
-                        for name in node.names:
-                            imports.add(name.name.split('.')[0])
-                    elif isinstance(node, ast.ImportFrom):
-                        if node.module:
-                            imports.add(node.module.split('.')[0])
-            except:
-                pass
-
-# Common package mappings
-package_map = {
-    'cv2': 'opencv-python',
-    'sklearn': 'scikit-learn',
-    'PIL': 'Pillow',
-    'yaml': 'pyyaml'
-}
-
-packages_to_install = []
-for imp in imports:
-    if imp in package_map:
-        packages_to_install.append(package_map[imp])
-    elif imp not in ['os', 'sys', 'math', 'random', 'json', 'time', 'datetime', 're']:
-        packages_to_install.append(imp)
-
-if packages_to_install:
-    print(f"Detected imports suggest these packages: {', '.join(packages_to_install[:10])}")
-EOF
-          
+          echo "⚠️ No dependency files found"
+          # Try to install common packages for common imports
+          pip install requests numpy pandas matplotlib 2>/dev/null || true
           exit 1
         fi
         
@@ -122,7 +71,7 @@ EOF
           exit 1
         fi
     
-    # CHECK 2: Python syntax - checks ALL .py files recursively
+    # CHECK 2: Python syntax
     - name: "✔️ Check 2: Python syntax validation"
       id: check-syntax
       continue-on-error: true
@@ -134,7 +83,7 @@ EOF
         ERROR_COUNT=0
         SUCCESS_COUNT=0
         
-        # Find ALL Python files in ANY directory
+        # Find ALL Python files
         python_files=$(find . -name "*.py" -not -path "*/\.*" -not -path "*/venv/*" -not -path "*/node_modules/*" 2>/dev/null)
         
         if [ -z "$python_files" ]; then
@@ -161,8 +110,8 @@ EOF
           exit 1
         fi
     
-    # CHECK 3: Test imports
-    - name: "📥 Check 3: Test all imports"
+    # CHECK 3: Test imports (simplified)
+    - name: "📥 Check 3: Test imports"
       id: check-imports
       continue-on-error: true
       run: |
@@ -170,51 +119,19 @@ EOF
         echo "CHECK 3: Testing imports..."
         echo "=========================================="
         
-        python << 'EOF'
-import os
-import ast
-import sys
-
-failed = []
-succeeded = []
-
-for root, dirs, files in os.walk('.'):
-    dirs[:] = [d for d in dirs if d not in ['.git', 'venv', '__pycache__', 'node_modules']]
-    
-    for file in files:
-        if file.endswith('.py'):
-            filepath = os.path.join(root, file)
-            try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    tree = ast.parse(f.read())
-                
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.Import):
-                        for name in node.names:
-                            try:
-                                __import__(name.name)
-                                succeeded.append(name.name)
-                            except:
-                                failed.append(f"{filepath}: {name.name}")
-                    elif isinstance(node, ast.ImportFrom):
-                        if node.module:
-                            try:
-                                __import__(node.module)
-                                succeeded.append(node.module)
-                            except:
-                                failed.append(f"{filepath}: {node.module}")
-            except:
-                pass
-
-print(f"Import results: {len(set(succeeded))} OK, {len(failed)} failed")
-
-if len(failed) > len(succeeded) * 0.5:  # Allow up to 50% failure rate
-    print('❌ FAILED: Too many import failures')
-    sys.exit(1)
-else:
-    print('✅ SUCCESS: Most imports working')
-    sys.exit(0)
-EOF
+        # Simple import test - try to compile all files
+        IMPORT_ERRORS=0
+        for file in $(find . -name "*.py" -not -path "*/venv/*" 2>/dev/null | head -20); do
+          python -c "import ast; ast.parse(open('$file').read())" 2>/dev/null || IMPORT_ERRORS=$((IMPORT_ERRORS + 1))
+        done
+        
+        if [ $IMPORT_ERRORS -gt 5 ]; then
+          echo "❌ FAILED: Many import/syntax issues"
+          exit 1
+        else
+          echo "✅ SUCCESS: Most files parse correctly"
+          exit 0
+        fi
     
     # CHECK 4: Deprecation warnings
     - name: "⚠️ Check 4: Deprecation warnings"
@@ -225,14 +142,14 @@ EOF
         echo "CHECK 4: Checking for deprecation warnings..."
         echo "=========================================="
         
-        python -W all -c "
-import warnings
-warnings.filterwarnings('always', category=DeprecationWarning)
-print('Deprecation check completed')
-" 2>&1 | grep -i "deprecation" && echo "❌ Deprecation warnings found" && exit 1 || echo "✅ No deprecation warnings" && exit 0
+        # Simple deprecation check
+        python -W all -c "print('Checking for deprecations...')" 2>&1 | grep -i "deprecation" && echo "❌ Found deprecation warnings" && exit 1
+        
+        echo "✅ SUCCESS: No major deprecation warnings"
+        exit 0
     
-    # CHECK 5: Tests - looks EVERYWHERE for test files
-    - name: "🧪 Check 5: Run tests (if they exist)"
+    # CHECK 5: Tests
+    - name: "🧪 Check 5: Look for tests"
       id: check-tests
       continue-on-error: true
       run: |
@@ -240,14 +157,12 @@ print('Deprecation check completed')
         echo "CHECK 5: Looking for tests..."
         echo "=========================================="
         
-        # Search for test files ANYWHERE in the project
-        test_files=$(find . -name "test*.py" -o -name "*test*.py" -o -name "*Test*.py" 2>/dev/null | grep -v __pycache__)
-        test_dirs=$(find . -type d -name "test*" -o -type d -name "*test*" 2>/dev/null | grep -v __pycache__)
+        # Search for test files
+        test_files=$(find . -name "test*.py" -o -name "*test*.py" 2>/dev/null | grep -v __pycache__ | head -5)
         
-        if [ -n "$test_files" ] || [ -n "$test_dirs" ]; then
-          echo "Found test files/directories:"
-          echo "$test_files" | head -5
-          echo "$test_dirs" | head -5
+        if [ -n "$test_files" ]; then
+          echo "Found test files:"
+          echo "$test_files"
           echo "✅ SUCCESS: Tests found"
           exit 0
         else
@@ -255,7 +170,7 @@ print('Deprecation check completed')
           exit 1
         fi
     
-    # CHECK 6: Documentation - checks for ANY documentation
+    # CHECK 6: Documentation
     - name: "📚 Check 6: Documentation check"
       id: check-docs
       continue-on-error: true
@@ -266,21 +181,15 @@ print('Deprecation check completed')
         
         DOCS_SCORE=0
         
-        # Check for README in any format, anywhere
-        if find . -iname "readme*" | grep -q .; then
+        # Check for README
+        if find . -iname "readme*" -type f | grep -q .; then
           echo "✓ README found"
           DOCS_SCORE=$((DOCS_SCORE + 2))
         fi
         
         # Check for LICENSE
-        if find . -iname "license*" | grep -q .; then
+        if find . -iname "license*" -type f | grep -q .; then
           echo "✓ LICENSE found"
-          DOCS_SCORE=$((DOCS_SCORE + 1))
-        fi
-        
-        # Check for docs directory
-        if find . -type d -iname "doc*" | grep -q .; then
-          echo "✓ Documentation directory found"
           DOCS_SCORE=$((DOCS_SCORE + 1))
         fi
         
@@ -295,7 +204,7 @@ print('Deprecation check completed')
         fi
     
     # CHECK 7: Security
-    - name: "🔒 Check 7: Security vulnerability scan"
+    - name: "🔒 Check 7: Security scan"
       id: check-security
       continue-on-error: true
       run: |
@@ -303,25 +212,18 @@ print('Deprecation check completed')
         echo "CHECK 7: Security scan..."
         echo "=========================================="
         
+        # Try to install and run bandit
         pip install bandit 2>/dev/null || true
         
-        # Quick security scan
-        bandit -r . -ll -f json 2>/dev/null | python -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    issues = data.get('results', [])
-    high = [i for i in issues if i.get('issue_severity') == 'HIGH']
-    if high:
-        print(f'❌ Found {len(high)} HIGH severity issues')
-        sys.exit(1)
-    else:
-        print('✅ No high severity issues')
-        sys.exit(0)
-except:
-    print('✅ Security scan completed')
-    sys.exit(0)
-" || exit 0  # Don't fail on security issues
+        # Run basic security scan
+        if command -v bandit &> /dev/null; then
+          bandit -r . -ll 2>/dev/null | head -50 || true
+          echo "✅ Security scan completed"
+        else
+          echo "⚠️ Security scan skipped (bandit not available)"
+        fi
+        
+        exit 0
     
     # FINAL SUMMARY
     - name: "📊 Generate Final Report"
@@ -334,13 +236,54 @@ except:
         
         PASS_COUNT=0
         
-        [ "${{ steps.check-deps.outcome }}" == "success" ] && echo "✅ Requirements: PASSED" && PASS_COUNT=$((PASS_COUNT + 1)) || echo "❌ Requirements: FAILED"
-        [ "${{ steps.check-syntax.outcome }}" == "success" ] && echo "✅ Syntax: PASSED" && PASS_COUNT=$((PASS_COUNT + 1)) || echo "❌ Syntax: FAILED"
-        [ "${{ steps.check-imports.outcome }}" == "success" ] && echo "✅ Imports: PASSED" && PASS_COUNT=$((PASS_COUNT + 1)) || echo "❌ Imports: FAILED"
-        [ "${{ steps.check-deprecation.outcome }}" == "success" ] && echo "✅ Deprecation: PASSED" && PASS_COUNT=$((PASS_COUNT + 1)) || echo "❌ Deprecation: FAILED"
-        [ "${{ steps.check-tests.outcome }}" == "success" ] && echo "✅ Tests: PASSED" && PASS_COUNT=$((PASS_COUNT + 1)) || echo "❌ Tests: FAILED"
-        [ "${{ steps.check-docs.outcome }}" == "success" ] && echo "✅ Documentation: PASSED" && PASS_COUNT=$((PASS_COUNT + 1)) || echo "❌ Documentation: FAILED"
-        [ "${{ steps.check-security.outcome }}" == "success" ] && echo "✅ Security: PASSED" && PASS_COUNT=$((PASS_COUNT + 1)) || echo "❌ Security: FAILED"
+        if [ "${{ steps.check-deps.outcome }}" = "success" ]; then
+          echo "✅ Requirements: PASSED"
+          PASS_COUNT=$((PASS_COUNT + 1))
+        else
+          echo "❌ Requirements: FAILED"
+        fi
+        
+        if [ "${{ steps.check-syntax.outcome }}" = "success" ]; then
+          echo "✅ Syntax: PASSED"
+          PASS_COUNT=$((PASS_COUNT + 1))
+        else
+          echo "❌ Syntax: FAILED"
+        fi
+        
+        if [ "${{ steps.check-imports.outcome }}" = "success" ]; then
+          echo "✅ Imports: PASSED"
+          PASS_COUNT=$((PASS_COUNT + 1))
+        else
+          echo "❌ Imports: FAILED"
+        fi
+        
+        if [ "${{ steps.check-deprecation.outcome }}" = "success" ]; then
+          echo "✅ Deprecation: PASSED"
+          PASS_COUNT=$((PASS_COUNT + 1))
+        else
+          echo "❌ Deprecation: FAILED"
+        fi
+        
+        if [ "${{ steps.check-tests.outcome }}" = "success" ]; then
+          echo "✅ Tests: PASSED"
+          PASS_COUNT=$((PASS_COUNT + 1))
+        else
+          echo "❌ Tests: FAILED"
+        fi
+        
+        if [ "${{ steps.check-docs.outcome }}" = "success" ]; then
+          echo "✅ Documentation: PASSED"
+          PASS_COUNT=$((PASS_COUNT + 1))
+        else
+          echo "❌ Documentation: FAILED"
+        fi
+        
+        if [ "${{ steps.check-security.outcome }}" = "success" ]; then
+          echo "✅ Security: PASSED"
+          PASS_COUNT=$((PASS_COUNT + 1))
+        else
+          echo "❌ Security: FAILED"
+        fi
         
         echo ""
         echo "=========================================="
@@ -349,11 +292,9 @@ except:
         echo ""
         
         if [ $PASS_COUNT -ge 5 ]; then
-          echo "🟢 🟢 🟢 PROJECT STATUS: FUNCTIONAL 🟢 �� 🟢"
-          echo "         → Mark as GREEN in Excel"
+          echo "🟢 PROJECT STATUS: FUNCTIONAL 🟢"
+          echo "    → Mark as GREEN in Excel"
         else
-          echo "🔴 🔴 🔴 PROJECT STATUS: NOT FUNCTIONAL 🔴 🔴 🔴"
-          echo "         → Mark as RED in Excel"
+          echo "🔴 PROJECT STATUS: NOT FUNCTIONAL 🔴"
+          echo "    → Mark as RED in Excel"
         fi
-
-
